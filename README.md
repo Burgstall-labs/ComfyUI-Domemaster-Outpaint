@@ -5,8 +5,7 @@ normal perspective shot into an immersive hemisphere and render it as a
 **domemaster** — the standard fulldome delivery format (square frame,
 circular 180° fisheye) — with tilted-venue presets.
 
-By **Burgstall Labs**. Built for the LTX2.3 VR-Outpaint model; works with any
-pipeline that produces equirectangular imagery.
+By **Burgstall Labs**. Built to work with the LTX2.3 VR-Outpaint IC-LoRA: https://huggingface.co/TheBurgstall/VR-360-Outpaint-LTX2.3-IC-LoRA
 
 **Keywords:** ComfyUI domemaster, fulldome outpaint, planetarium video,
 360 dome projection, fisheye render, tilted dome, LTX-2.3, Burgstall Labs.
