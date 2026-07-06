@@ -72,9 +72,6 @@ the torch runtime ComfyUI already uses.
 
 ## Related Burgstall Labs work
 
-- [360° gallery + viewer](https://huggingface.co/spaces/TheBurgstall/360viewer) —
-  sample text-to-video and outpaint generations, viewable interactively, with
-  downloadable ComfyUI workflows.
 - [ComfyUI-VR-Outpaint-Tools](https://github.com/Burgstall-labs/ComfyUI-VR-Outpaint-Tools) —
   projection prep, camera estimation, and outpaint finishing (source
   composite + tone correction).
