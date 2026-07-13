@@ -5,15 +5,22 @@ Licensed under the PolyForm Noncommercial License 1.0.0.
 https://polyformproject.org/licenses/noncommercial/1.0.0
 """
 
+import logging
 import math
 
 import torch
 import torch.nn.functional as F
 
+try:
+    import comfy.utils as _comfy_utils
+except ImportError:  # standalone test runs outside ComfyUI
+    _comfy_utils = None
+
+
+logger = logging.getLogger("DomemasterOutpaint")
+
+
 # Venue tilt presets: how much the physical dome leans toward the audience.
-# The preset pitches the aim UP by the tilt, which slides the source content
-# from "straight overhead" (flat dome) to the tilted venue's natural forward
-# gaze (the sweet spot between dome center and the front springline).
 _TILT_PRESETS = {
     "0 (flat dome / video at center)": 0.0,
     "15 (tilted venue)": 15.0,
@@ -24,20 +31,11 @@ _TILT_PRESETS = {
 
 
 class EquirectToDomemaster:
-    """Render a domemaster (square 180° fisheye, fulldome format) from an
-    equirectangular panorama.
+    """Render an equidistant domemaster from an equirectangular canvas.
 
-    Defaults aim the dome at the canvas center (yaw 0 / pitch 0) — with the
-    outpaint workflow that's exactly where Rectilinear → Equirect places the
-    source video, so the original footage lands at the dome center and the
-    outpainted content fills out to the rim. The equirect wrap edge (yaw 180°)
-    is more than 90° away and never appears in the output.
-
-    `dome_tilt` matches the render to a tilted venue: it pitches the aim up
-    by the venue tilt so the source sits at the audience's natural gaze
-    instead of straight overhead. `pitch_deg` is an additional manual offset
-    (90 = classic zenith-centered domemaster). Sampling is wrap-aware across
-    the equirect seam. Pixels outside the fisheye circle are black.
+    The Burgstall VR-Outpaint LoRA's normal 1:1 output is a 180 x 180 degree
+    square hemisphere, so that is the default input span. A conventional 2:1
+    full-sphere ERP remains supported by selecting 360 x 180 degrees.
     """
 
     @classmethod
@@ -46,30 +44,47 @@ class EquirectToDomemaster:
             "required": {
                 "image": ("IMAGE",),
                 "size": ("INT", {"default": 2048, "min": 256, "max": 8192, "step": 64}),
-                "fov_deg": ("FLOAT", {"default": 180.0, "min": 90.0, "max": 250.0, "step": 1.0,
-                                      "tooltip": "Dome field of view. 180 = standard domemaster."}),
+                "fov_deg": ("FLOAT", {
+                    "default": 180.0, "min": 90.0, "max": 250.0, "step": 1.0,
+                    "tooltip": "Dome field of view. 180 = standard domemaster.",
+                }),
                 "dome_tilt": (list(_TILT_PRESETS.keys()), {
                     "default": "0 (flat dome / video at center)",
-                    "tooltip": "Physical tilt of the target venue. Pitches the aim up by "
-                    "the tilt so the source content lands at the tilted dome's sweet "
-                    "spot rather than straight overhead.",
+                    "tooltip": "Creative framing preset for a tilted venue. Adds an upward "
+                    "aim offset; confirm the final orientation against the venue's convention.",
                 }),
                 "yaw_deg": ("FLOAT", {"default": 0.0, "min": -180.0, "max": 180.0, "step": 1.0}),
-                "pitch_deg": ("FLOAT", {"default": 0.0, "min": -90.0, "max": 90.0, "step": 1.0,
-                                        "tooltip": "Manual aim offset, added to the tilt preset. "
-                                        "0 = dome centered on the source patch, "
-                                        "90 = centered on the zenith (camera-up domemaster)."}),
-                "roll_deg": ("FLOAT", {"default": 0.0, "min": -180.0, "max": 180.0, "step": 1.0,
-                                       "tooltip": "Rotate the dome image about its center "
-                                       "(which direction is 'front'/down-screen)."}),
+                "pitch_deg": ("FLOAT", {
+                    "default": 0.0, "min": -90.0, "max": 90.0, "step": 1.0,
+                    "tooltip": "Manual aim offset added to dome_tilt. 0 centers the LoRA's "
+                    "source direction; 90 centers the original ERP zenith.",
+                }),
+                "roll_deg": ("FLOAT", {
+                    "default": 0.0, "min": -180.0, "max": 180.0, "step": 1.0,
+                    "tooltip": "Rotate the domemaster about its center.",
+                }),
                 "interp": (["bilinear", "bicubic"], {"default": "bicubic"}),
             },
             "optional": {
-                # Angular span of the INPUT canvas. 360/180 = full equirect
-                # (default). 180/180 = square-hemisphere canvas from
-                # Rectilinear → Equirect with matching canvas spans.
-                "input_hfov_deg": ("FLOAT", {"default": 360.0, "min": 90.0, "max": 360.0, "step": 1.0}),
-                "input_vfov_deg": ("FLOAT", {"default": 180.0, "min": 90.0, "max": 180.0, "step": 1.0}),
+                "input_hfov_deg": ("FLOAT", {
+                    "default": 180.0, "min": 90.0, "max": 360.0, "step": 1.0,
+                    "tooltip": "Angular width of the input. Use 180 for the LoRA's 1:1 "
+                    "square hemisphere; 360 for a conventional 2:1 full ERP.",
+                }),
+                "input_vfov_deg": ("FLOAT", {
+                    "default": 180.0, "min": 90.0, "max": 180.0, "step": 1.0,
+                    "tooltip": "Angular height of the input. The VR-Outpaint LoRA uses 180.",
+                }),
+                "batch_size": ("INT", {
+                    "default": 8, "min": 1, "max": 256, "step": 1,
+                    "tooltip": "Frames rendered per GPU chunk. Lower this if a large video "
+                    "runs out of VRAM; it does not change the result.",
+                }),
+                "mirror_x": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Mirror left/right for a venue or viewer that expects an "
+                    "outside-dome convention. Leave off for Burgstall VR-Outpaint output.",
+                }),
             },
         }
 
@@ -78,19 +93,40 @@ class EquirectToDomemaster:
     FUNCTION = "render"
     CATEGORY = "360/dome"
 
+    @torch.inference_mode()
     def render(self, image, size, fov_deg, dome_tilt, yaw_deg, pitch_deg, roll_deg,
-               interp, input_hfov_deg=360.0, input_vfov_deg=180.0):
+               interp, input_hfov_deg=180.0, input_vfov_deg=180.0,
+               batch_size=8, mirror_x=False):
         device = image.device
         B, H, W, C = image.shape
+        if B == 0 or H == 0 or W == 0:
+            raise ValueError("EquirectToDomemaster received an empty IMAGE batch")
+
         S = int(size)
+        chunk_size = max(1, int(batch_size))
         full_wrap = input_hfov_deg >= 359.5
-        h_span = math.radians(input_hfov_deg)
-        v_span = math.radians(input_vfov_deg)
+        h_span = math.radians(float(input_hfov_deg))
+        v_span = math.radians(float(input_vfov_deg))
         aim_pitch = float(pitch_deg) + _TILT_PRESETS.get(dome_tilt, 0.0)
 
-        # ---- Output pixel → direction on the unit sphere ----
-        # Domemaster: equidistant fisheye. r (fraction of radius) → angle from
-        # the optical axis theta = r * fov/2.
+        expected_ratio = float(input_hfov_deg) / float(input_vfov_deg)
+        actual_ratio = W / H
+        if abs(actual_ratio / expected_ratio - 1.0) > 0.05:
+            logger.warning(
+                "Input is %dx%d (aspect %.3f) but angular spans %.1fx%.1f expect %.3f. "
+                "For Burgstall VR-Outpaint 1:1 output use 180x180; for a full 2:1 ERP use 360x180.",
+                W, H, actual_ratio, input_hfov_deg, input_vfov_deg, expected_ratio,
+            )
+
+        logger.info(
+            "EquirectToDomemaster: %d frames %dx%d -> %dx%d, input span %.1fx%.1f, "
+            "chunk=%d, mirror_x=%s",
+            B, W, H, S, S, input_hfov_deg, input_vfov_deg, chunk_size, mirror_x,
+        )
+
+        # Output pixel -> direction on the unit sphere. This follows the same
+        # longitude convention as RectilinearToEquirect in VR-Outpaint-Tools:
+        # longitude increases to image-right, latitude increases upward.
         half = (S - 1) / 2.0
         vv, uu = torch.meshgrid(
             torch.arange(S, device=device, dtype=torch.float32),
@@ -99,56 +135,74 @@ class EquirectToDomemaster:
         )
         dx = (uu - half) / (S / 2.0)
         dy = (vv - half) / (S / 2.0)
+        if mirror_x:
+            dx = -dx
         if roll_deg:
-            rr = math.radians(roll_deg)
+            rr = math.radians(float(roll_deg))
             cr, sr = math.cos(rr), math.sin(rr)
             dx, dy = dx * cr - dy * sr, dx * sr + dy * cr
+
         r = torch.sqrt(dx * dx + dy * dy)
         inside = r <= 1.0
-        r_safe = r.clamp(min=1e-8)
-        theta = r * math.radians(fov_deg) / 2.0  # angle from axis
+        theta = r * math.radians(float(fov_deg)) / 2.0
         sin_t = torch.sin(theta)
-        # Camera frame: x right, y up, z forward (optical axis). Image up = scene up.
+        r_safe = r.clamp(min=1e-8)
         x = sin_t * (dx / r_safe)
         y = sin_t * (-dy / r_safe)
         z = torch.cos(theta)
 
-        # ---- Aim: pitch about x (up/down), then yaw about world-up ----
+        # Aim: pitch about camera-right, then yaw about world-up.
         p = math.radians(aim_pitch)
         cp, sp = math.cos(p), math.sin(p)
         y, z = y * cp + z * sp, -y * sp + z * cp
-        yw = math.radians(yaw_deg)
+        yw = math.radians(float(yaw_deg))
         cy, sy = math.cos(yw), math.sin(yw)
         x, z = x * cy + z * sy, -x * sy + z * cy
 
-        # ---- Direction → input canvas coords ----
         lat = torch.asin(y.clamp(-1.0, 1.0))
         lon = torch.atan2(x, z)
-        u_eq = (lon / h_span + 0.5) * W  # pixel index space; wraps at W only for full 360
+
+        # Deliberately matches VR-Outpaint-Tools' ERP convention exactly:
+        # lon = (u / W - 0.5) * span and lat = (0.5 - v / H) * span.
+        u_eq = (lon / h_span + 0.5) * W
         v_eq = (0.5 - lat / v_span) * H
-        # Directions outside a partial canvas render black
         in_span = (lon.abs() <= h_span / 2.0) & (lat.abs() <= v_span / 2.0)
 
-        img = image.permute(0, 3, 1, 2).float()  # (B, C, H, W)
+        pad = 2 if full_wrap else 0
+        Wp = W + 2 * pad
         if full_wrap:
-            # Wrap-aware sampling: circular-pad the panorama along W
-            pad = 2
-            img = F.pad(img, [pad, pad, 0, 0], mode="circular")
-            Wp = W + 2 * pad
             u = (u_eq % W) + pad
         else:
-            Wp = W
             u = u_eq.clamp(0, W - 1)
         gx = (u / max(Wp - 1, 1)) * 2.0 - 1.0
         gy = (v_eq.clamp(0, H - 1) / max(H - 1, 1)) * 2.0 - 1.0
-        grid = torch.stack([gx, gy], dim=-1).unsqueeze(0).expand(B, -1, -1, -1).contiguous()
+        grid = torch.stack([gx, gy], dim=-1).unsqueeze(0)
+        keep = (inside & in_span).unsqueeze(0).unsqueeze(-1)
+        del uu, vv, dx, dy, r, theta, sin_t, r_safe, x, y, z
+        del lat, lon, u_eq, v_eq, in_span, inside, u, gx, gy
 
-        out = F.grid_sample(img, grid, mode=interp, padding_mode="border",
-                            align_corners=True)
-        out = out.permute(0, 2, 3, 1)  # (B, S, S, C)
-        keep = (inside & in_span).unsqueeze(0).unsqueeze(-1).to(out.dtype)
-        out = out * keep
-        return (out.clamp(0.0, 1.0).to(image.dtype),)
+        # Geometry is shared by every frame. Chunking avoids the old BxSxSx2
+        # contiguous grid copy and avoids converting the entire video to fp32
+        # at once. The final IMAGE batch still has to fit, but peak VRAM is much
+        # lower and batch_size provides a predictable escape hatch.
+        result = torch.empty((B, S, S, C), device=device, dtype=image.dtype)
+        pbar = _comfy_utils.ProgressBar(B) if _comfy_utils is not None else None
+        for start in range(0, B, chunk_size):
+            end = min(start + chunk_size, B)
+            img = image[start:end].permute(0, 3, 1, 2).float()
+            if full_wrap:
+                img = F.pad(img, [pad, pad, 0, 0], mode="circular")
+            chunk_grid = grid.expand(end - start, -1, -1, -1)
+            out = F.grid_sample(
+                img, chunk_grid, mode=interp, padding_mode="border", align_corners=True,
+            )
+            out = out.permute(0, 2, 3, 1)
+            out = out * keep
+            result[start:end].copy_(out.clamp(0.0, 1.0).to(image.dtype))
+            if pbar:
+                pbar.update(end - start)
+
+        return (result,)
 
 
 NODE_CLASS_MAPPINGS = {

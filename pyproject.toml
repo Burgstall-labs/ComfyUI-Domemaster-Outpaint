@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-domemaster-outpaint"
-description = "Outpaint flat video into fulldome / planetarium shows: domemaster rendering with tilted-venue presets for ComfyUI, on top of the Burgstall Labs 360 outpaint pipeline."
-version = "1.0.0"
+description = "Render Burgstall VR-Outpaint square hemispheres and full equirectangular panoramas as fulldome domemasters in ComfyUI."
+version = "1.1.0"
 license = { file = "LICENSE" }
 dependencies = []
 
