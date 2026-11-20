@@ -1,6 +1,8 @@
 # ComfyUI-Domemaster-Outpaint
 
-PROFESSIONAL-GRADE Domemaster / Fulldome conversions based on proprietary technology and models further developed by Burgstall Labs Oy are now available commercially. For inquiries, please contact: info@burgstall-labs.com or visit https://www.domeoutpaint.com
+## PROFESSIONAL-GRADE Domemaster / Fulldome conversions
+based on proprietary technology and models further developed by Burgstall Labs Oy are now available commercially. For inquiries, please contact: 
+## info@burgstall-labs.com or visit https://www.domeoutpaint.com
 
 Turn flat video into **fulldome / planetarium shows** with ComfyUI. The pack
 renders equirectangular output from the
