@@ -1,5 +1,7 @@
 # ComfyUI-Domemaster-Outpaint
 
+PROFESSIONAL-GRADE Domemaster / Fulldome conversions based on proprietary technology and models further developed by Burgstall Labs Oy are now available commercially. For inquiries, please contact: info@burgstall-labs.com or visit https://www.domeoutpaint.com
+
 Turn flat video into **fulldome / planetarium shows** with ComfyUI. The pack
 renders equirectangular output from the
 [Burgstall LTX2.3 VR-Outpaint IC-LoRA](https://huggingface.co/TheBurgstall/VR-360-Outpaint-LTX2.3-IC-LoRA)
